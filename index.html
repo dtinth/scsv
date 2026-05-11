@@ -122,8 +122,7 @@ function formatSize(bytes) {
 }
 
 function formatDate(mtime) {
-  // dufs returns mtime as Unix seconds (float)
-  const d = new Date(typeof mtime === 'number' ? mtime * 1000 : mtime)
+  const d = new Date(mtime)
   return d.toLocaleString('en-GB', {
     year: 'numeric', month: 'short', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
@@ -174,7 +173,7 @@ async function listFiles() {
   const data = await res.json()
   return (data.paths || [])
     .filter(p => p.path_type === 'File' || p.path_type === 'SymlinkFile')
-    .sort((a, b) => (b.mtime || 0) - (a.mtime || 0))
+    .sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0))
 }
 
 async function uploadFile(filename, file) {
