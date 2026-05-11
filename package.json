@@ -2,9 +2,12 @@
   "name": "scsv",
   "version": "1.0.0",
   "type": "module",
+  "bin": {
+    "scsv": "src/server.ts"
+  },
   "scripts": {
-    "start": "node src/server.ts",
-    "dev": "node --watch src/server.ts"
+    "start": "bun src/server.ts",
+    "dev": "bun --watch src/server.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",

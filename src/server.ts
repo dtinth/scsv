@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { createReadStream, statSync } from 'node:fs'
