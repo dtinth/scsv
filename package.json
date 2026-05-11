@@ -1,16 +1,4 @@
 {
   "name": "scsv",
-  "version": "1.0.0",
-  "type": "module",
-  "bin": {
-    "scsv": "src/server.ts"
-  },
-  "scripts": {
-    "start": "bun src/server.ts",
-    "dev": "bun --watch src/server.ts"
-  },
-  "dependencies": {
-    "@hono/node-server": "^1.13.7",
-    "hono": "^4.7.10"
-  }
+  "version": "1.0.0"
 }

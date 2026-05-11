@@ -1,0 +1,474 @@
+<!doctype html>
+<html data-bs-theme="dark" lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>scsv</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <style>
+    body { font-family: monospace; }
+    td, th { font-size: .9rem; }
+    a { text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .copy-btn {
+      display: inline-block; cursor: pointer; font-size: .75rem;
+      padding: 0 4px; border-radius: 3px; background: #2a2a2a;
+      color: #aaa; border: 1px solid #444; user-select: none;
+      min-width: 1.4rem; text-align: center;
+    }
+    .copy-btn:hover { background: #3a3a3a; color: #fff; }
+    .copy-btn.copied { background: #155724; color: #75b798; border-color: #75b798; }
+    #drop-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(13,110,253,.15); border: 3px dashed #0d6efd;
+      z-index: 9999; pointer-events: none;
+      align-items: center; justify-content: center;
+      font-size: 1.5rem; color: #0d6efd;
+    }
+    #drop-overlay.active { display: flex; }
+    .upload-filename { font-family: monospace; font-size: .85rem; }
+  </style>
+</head>
+<body>
+
+<!-- ── Server picker ──────────────────────────────────────────────────────── -->
+<div id="picker-view" class="container py-5" style="max-width:560px; display:none">
+  <h3 class="mb-4">scsv</h3>
+  <div id="saved-servers" class="mb-4"></div>
+  <h6 class="text-secondary">Connect to server</h6>
+  <form id="connect-form">
+    <div class="mb-2">
+      <input type="url" id="server-url" class="form-control"
+        placeholder="https://machine.tail-xyz.ts.net:20021" required>
+    </div>
+    <div class="input-group mb-3">
+      <span class="input-group-text text-secondary" style="font-size:.85rem">Scratch path</span>
+      <input type="text" id="scratch-path" class="form-control" value="~/Scratch">
+    </div>
+    <button type="submit" class="btn btn-primary btn-sm">Connect</button>
+  </form>
+</div>
+
+<!-- ── File browser ───────────────────────────────────────────────────────── -->
+<div id="browser-view" class="container py-4" style="display:none">
+  <div id="drop-overlay">Drop files to upload</div>
+
+  <div class="d-flex align-items-center gap-2 mb-3">
+    <h4 class="mb-0">Scratch <small class="text-secondary fs-6" id="scratch-tilde"></small></h4>
+    <div class="ms-auto d-flex gap-2">
+      <button class="btn btn-sm btn-outline-secondary" id="upload-btn">Upload file</button>
+      <button class="btn btn-sm btn-outline-secondary" id="paste-btn">Paste</button>
+      <input type="file" id="file-input" class="d-none" multiple>
+      <a href="?" class="btn btn-sm btn-outline-secondary" title="Change server">⇄</a>
+    </div>
+  </div>
+
+  <div id="file-list-container">
+    <p class="text-secondary">Loading…</p>
+  </div>
+</div>
+
+<!-- ── Upload modal ───────────────────────────────────────────────────────── -->
+<div class="modal fade" id="upload-modal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header py-2">
+        <h5 class="modal-title">Upload</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body p-0">
+        <table class="table table-sm mb-0">
+          <thead><tr><th class="ps-3">Filename</th><th class="text-end pe-3">Size</th></tr></thead>
+          <tbody id="upload-list"></tbody>
+        </table>
+      </div>
+      <div class="modal-footer py-2">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary btn-sm" id="confirm-upload-btn">Upload</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
+<script>
+
+// ── Storage ────────────────────────────────────────────────────────────────
+
+const STORAGE_KEY = 'scsv_servers'
+
+function getServers() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]') } catch { return [] }
+}
+
+function saveServer(url, scratchPath) {
+  const servers = getServers().filter(s => s.url !== url)
+  servers.unshift({ url, scratchPath: scratchPath || '~/Scratch', lastUsed: Date.now() })
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(servers.slice(0, 20)))
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function serverDisplayName(url) {
+  try { return new URL(url).hostname.split('.')[0] } catch { return url }
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB'
+  if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB'
+  return (bytes / 1073741824).toFixed(1) + ' GB'
+}
+
+function formatDate(mtime) {
+  // dufs returns mtime as Unix seconds (float)
+  const d = new Date(typeof mtime === 'number' ? mtime * 1000 : mtime)
+  return d.toLocaleString('en-GB', {
+    year: 'numeric', month: 'short', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  })
+}
+
+function timeAgo(ts) {
+  const diff = Date.now() - ts
+  if (diff < 60000) return 'just now'
+  if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago'
+  if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago'
+  return Math.floor(diff / 86400000) + 'd ago'
+}
+
+function timestampName(ext) {
+  const n = new Date(), p = v => String(v).padStart(2, '0')
+  const date = `${n.getFullYear()}${p(n.getMonth()+1)}${p(n.getDate())}`
+  const time = `${p(n.getHours())}${p(n.getMinutes())}${p(n.getSeconds())}`
+  return `${date}-${time}-${Math.random().toString(36).slice(2,6).toUpperCase()}.${ext}`
+}
+
+const MIME = {
+  '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg',
+  '.gif':'image/gif', '.webp':'image/webp', '.svg':'image/svg+xml',
+  '.pdf':'application/pdf', '.txt':'text/plain', '.md':'text/markdown',
+  '.json':'application/json', '.html':'text/html', '.css':'text/css',
+  '.js':'text/javascript', '.ts':'text/plain', '.csv':'text/csv',
+  '.xml':'application/xml', '.zip':'application/zip',
+  '.mp4':'video/mp4', '.mp3':'audio/mpeg', '.webm':'video/webm',
+}
+
+function getMime(filename) {
+  const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase()
+  return MIME[ext] || 'application/octet-stream'
+}
+
+// ── State ──────────────────────────────────────────────────────────────────
+
+let state = { serverUrl: null, scratchPath: '~/Scratch' }
+let pendingFiles = []
+let uploadModal = null
+
+// ── API ────────────────────────────────────────────────────────────────────
+
+async function listFiles() {
+  const res = await fetch(state.serverUrl + '/?json')
+  if (!res.ok) throw new Error('Server returned ' + res.status)
+  const data = await res.json()
+  return (data.paths || [])
+    .filter(p => p.path_type === 'File' || p.path_type === 'SymlinkFile')
+    .sort((a, b) => (b.mtime || 0) - (a.mtime || 0))
+}
+
+async function uploadFile(filename, file) {
+  const res = await fetch(state.serverUrl + '/' + encodeURIComponent(filename), {
+    method: 'PUT',
+    body: file,
+    headers: { 'Content-Type': file.type || 'application/octet-stream' },
+  })
+  if (!res.ok) throw new Error(await res.text())
+}
+
+async function deleteFile(filename) {
+  const res = await fetch(state.serverUrl + '/' + encodeURIComponent(filename), { method: 'DELETE' })
+  if (!res.ok) throw new Error(await res.text())
+}
+
+// ── Picker view ────────────────────────────────────────────────────────────
+
+function showPicker() {
+  $('#browser-view').hide()
+  $('#picker-view').show()
+
+  const servers = getServers()
+  if (!servers.length) { $('#saved-servers').hide(); return }
+
+  const rows = servers.map(s => `
+    <tr>
+      <td>
+        <strong>${$('<b>').text(serverDisplayName(s.url)).html()}</strong><br>
+        <small class="text-secondary">${$('<span>').text(s.url).html()}</small>
+      </td>
+      <td class="text-secondary text-nowrap align-middle">${timeAgo(s.lastUsed)}</td>
+      <td class="align-middle">
+        <button class="btn btn-sm btn-outline-primary connect-saved-btn"
+          data-url="${$('<span>').text(s.url).html()}"
+          data-scratch="${$('<span>').text(s.scratchPath).html()}">Connect</button>
+      </td>
+    </tr>`).join('')
+
+  $('#saved-servers').html(`
+    <h6 class="text-secondary">Recent servers</h6>
+    <table class="table table-sm table-hover"><tbody>${rows}</tbody></table>
+  `).show()
+}
+
+$(document).on('click', '.connect-saved-btn', function () {
+  connect($(this).data('url'), $(this).data('scratch'))
+})
+
+$('#connect-form').on('submit', function (e) {
+  e.preventDefault()
+  connect($('#server-url').val().trim().replace(/\/$/, ''), $('#scratch-path').val().trim() || '~/Scratch')
+})
+
+// ── Connect ────────────────────────────────────────────────────────────────
+
+function connect(url, scratchPath) {
+  state.serverUrl = url
+  state.scratchPath = scratchPath || '~/Scratch'
+  saveServer(url, scratchPath)
+  const u = new URL(location.href)
+  u.searchParams.set('server', url)
+  history.replaceState(null, '', u)
+  document.title = `scsv — ${serverDisplayName(url)}`
+  showBrowser()
+}
+
+// ── Browser view ───────────────────────────────────────────────────────────
+
+function showBrowser() {
+  $('#picker-view').hide()
+  $('#scratch-tilde').text(state.scratchPath)
+  $('#browser-view').show()
+  loadFiles()
+}
+
+async function loadFiles() {
+  try {
+    renderFiles(await listFiles())
+  } catch (err) {
+    $('#file-list-container').html(
+      `<div class="alert alert-danger">Failed to load: ${$('<span>').text(err.message).html()}</div>`
+    )
+  }
+}
+
+function renderFiles(files) {
+  if (!files.length) {
+    $('#file-list-container').html('<p class="text-secondary">No files.</p>')
+    return
+  }
+  const rows = files.map(f => {
+    const mime = getMime(f.name)
+    const encoded = encodeURIComponent(f.name)
+    const fileUrl = state.serverUrl + '/' + encoded
+    return `<tr>
+      <td>
+        <span class="copy-btn me-1" title="Copy path / drag"
+          draggable="true"
+          data-path="@${$('<span>').text(state.scratchPath + '/' + f.name).html()}"
+          data-action="copy-path">@</span><a
+          href="${$('<span>').text(fileUrl).html()}"
+          draggable="true"
+          data-mime="${$('<span>').text(mime).html()}"
+          data-encoded="${$('<span>').text(encoded).html()}"
+          data-action="drag-file">${$('<span>').text(f.name).html()}</a>
+      </td>
+      <td class="text-end text-secondary">${formatSize(f.size || 0)}</td>
+      <td class="text-secondary">${f.mtime ? formatDate(f.mtime) : ''}</td>
+      <td>
+        <button class="btn btn-sm btn-outline-danger py-0 px-1" style="font-size:.75rem"
+          data-action="delete-file"
+          data-name="${$('<span>').text(f.name).html()}">del</button>
+      </td>
+    </tr>`
+  }).join('')
+
+  $('#file-list-container').html(`
+    <table class="table table-hover table-sm">
+      <thead><tr><th>Name</th><th class="text-end">Size</th><th>Modified</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`)
+}
+
+// ── File row actions ───────────────────────────────────────────────────────
+
+$(document).on('click', '[data-action="copy-path"]', function () {
+  const el = this
+  navigator.clipboard.writeText($(el).data('path')).then(() => {
+    $(el).addClass('copied').text('✓')
+    setTimeout(() => $(el).removeClass('copied').text('@'), 1200)
+  })
+})
+
+$(document).on('dragstart', '[data-action="copy-path"]', function (e) {
+  e.stopPropagation()
+  e.originalEvent.dataTransfer.effectAllowed = 'copy'
+  e.originalEvent.dataTransfer.setData('text/plain', $(this).data('path'))
+})
+
+$(document).on('dragstart', '[data-action="drag-file"]', function (e) {
+  const mime = $(this).data('mime')
+  const encoded = $(this).data('encoded')
+  const url = state.serverUrl + '/' + encoded
+  e.originalEvent.dataTransfer.effectAllowed = 'copy'
+  e.originalEvent.dataTransfer.setData('DownloadURL', `${mime}:${decodeURIComponent(encoded)}:${url}`)
+})
+
+$(document).on('click', '[data-action="delete-file"]', async function () {
+  const name = $(this).data('name')
+  if (!confirm(`Delete ${name}?`)) return
+  try {
+    await deleteFile(name)
+    loadFiles()
+  } catch (err) {
+    alert('Delete failed: ' + err.message)
+  }
+})
+
+// ── Drag-and-drop onto page ────────────────────────────────────────────────
+
+let dragCounter = 0
+
+$(document).on('dragenter', e => {
+  if (!e.originalEvent.dataTransfer?.types.includes('Files')) return
+  if (++dragCounter === 1) $('#drop-overlay').addClass('active')
+})
+$(document).on('dragleave', () => {
+  if (--dragCounter <= 0) { dragCounter = 0; $('#drop-overlay').removeClass('active') }
+})
+$(document).on('dragover', e => e.preventDefault())
+$(document).on('drop', e => {
+  e.preventDefault()
+  dragCounter = 0
+  $('#drop-overlay').removeClass('active')
+  const files = [...(e.originalEvent.dataTransfer?.files ?? [])]
+  if (files.length) showUploadModal(files)
+})
+
+// ── Paste (Cmd/Ctrl+V anywhere) ────────────────────────────────────────────
+
+$(document).on('paste', async e => {
+  if ($('#browser-view').is(':hidden')) return
+  const tag = document.activeElement?.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return
+  e.preventDefault()
+
+  const files = []
+  const textPromises = []
+  for (const item of e.originalEvent.clipboardData.items) {
+    if (item.kind === 'file') {
+      const f = item.getAsFile()
+      if (!f) continue
+      const ext = f.type ? (f.type.split('/')[1] || 'bin') : 'bin'
+      const generic = ['', 'image.png', 'image.jpeg', 'image.jpg', 'image.gif', 'image.webp']
+      files.push(new File([f], generic.includes(f.name) ? timestampName(ext) : f.name, { type: f.type }))
+    } else if (item.kind === 'string' && item.type === 'text/plain') {
+      textPromises.push(new Promise(res => item.getAsString(res)))
+    }
+  }
+  if (!files.length && textPromises.length) {
+    const text = (await Promise.all(textPromises)).join('')
+    if (text.trim()) files.push(new File([text], timestampName('txt'), { type: 'text/plain' }))
+  }
+  if (files.length) showUploadModal(files)
+})
+
+// ── Paste button (Clipboard API) ───────────────────────────────────────────
+
+$('#paste-btn').on('click', async () => {
+  try {
+    const items = await navigator.clipboard.read()
+    const files = []
+    for (const item of items) {
+      for (const imgType of ['image/png', 'image/jpeg', 'image/gif', 'image/webp']) {
+        if (item.types.includes(imgType)) {
+          const blob = await item.getType(imgType)
+          files.push(new File([blob], timestampName(imgType.split('/')[1]), { type: imgType }))
+          break
+        }
+      }
+      if (!files.length && item.types.includes('text/plain')) {
+        const text = await (await item.getType('text/plain')).text()
+        if (text.trim()) files.push(new File([text], timestampName('txt'), { type: 'text/plain' }))
+      }
+    }
+    if (files.length) showUploadModal(files)
+    else alert('Nothing useful found in clipboard.')
+  } catch (err) {
+    alert('Could not read clipboard: ' + err.message)
+  }
+})
+
+// ── File picker ────────────────────────────────────────────────────────────
+
+$('#upload-btn').on('click', () => $('#file-input').click())
+$('#file-input').on('change', function () {
+  if (this.files.length) showUploadModal([...this.files])
+  this.value = ''
+})
+
+// ── Upload modal ───────────────────────────────────────────────────────────
+
+function showUploadModal(files) {
+  pendingFiles = files
+  $('#upload-list').html(files.map((f, i) => `
+    <tr>
+      <td class="ps-3"><input type="text" class="form-control form-control-sm upload-filename"
+        data-index="${i}" value="${$('<span>').text(f.name).html()}"></td>
+      <td class="text-end pe-3 text-secondary align-middle text-nowrap">${formatSize(f.size)}</td>
+    </tr>`).join(''))
+  $('#confirm-upload-btn').prop('disabled', false)
+    .text(files.length > 1 ? `Upload ${files.length} files` : 'Upload')
+  uploadModal.show()
+}
+
+$('#confirm-upload-btn').on('click', async () => {
+  const entries = []
+  let valid = true
+  $('.upload-filename').each(function (i) {
+    const name = $(this).val().trim()
+    if (!name || name.includes('/') || name.includes('..')) {
+      alert('Invalid filename: ' + name); valid = false; return false
+    }
+    entries.push({ file: pendingFiles[i], name })
+  })
+  if (!valid) return
+
+  const btn = $('#confirm-upload-btn').prop('disabled', true).text('Uploading…')
+  try {
+    for (const { file, name } of entries) {
+      await uploadFile(name, new File([file], name, { type: file.type }))
+    }
+    uploadModal.hide()
+    loadFiles()
+  } catch (err) {
+    alert('Upload failed: ' + err.message)
+    btn.prop('disabled', false).text('Upload')
+  }
+})
+
+// ── Init ───────────────────────────────────────────────────────────────────
+
+$(function () {
+  uploadModal = new bootstrap.Modal(document.getElementById('upload-modal'))
+  const serverUrl = new URLSearchParams(location.search).get('server')
+  if (serverUrl) {
+    const saved = getServers().find(s => s.url === serverUrl)
+    connect(serverUrl, saved?.scratchPath || '~/Scratch')
+  } else {
+    showPicker()
+  }
+})
+
+</script>
+</body>
+</html>
